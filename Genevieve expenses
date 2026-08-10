@@ -1,0 +1,498 @@
+import { useState, useEffect, useMemo } from "react";
+import { Plus, Trash2, ChevronDown, ChevronUp, Wallet, TrendingDown, TrendingUp } from "lucide-react";
+
+const STORAGE_KEY = "budget-data";
+
+function getStatus(spent, budget) {
+  if (!budget || budget <= 0) return "neutral";
+  const pct = spent / budget;
+  if (pct >= 1) return "red";
+  if (pct >= 0.7) return "amber";
+  return "green";
+}
+
+function money(n) {
+  const v = Number(n) || 0;
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function buildInsights(rows, incomeNum, totalSpent) {
+  const insights = [];
+  const overspent = rows
+    .filter((c) => c.budget > 0 && c.spent > c.budget)
+    .sort((a, b) => (b.spent - b.budget) - (a.spent - a.budget));
+  overspent.forEach((c) => {
+    const over = c.spent - c.budget;
+    insights.push({ status: "red", text: `${c.name} is $${money(over)} over its $${money(c.budget)} budget.` });
+  });
+
+  const nearing = rows.filter((c) => c.budget > 0 && c.spent <= c.budget && c.spent / c.budget >= 0.7);
+  nearing.forEach((c) => {
+    const left = c.budget - c.spent;
+    insights.push({ status: "amber", text: `${c.name} has $${money(left)} left before it tips red.` });
+  });
+
+  if (incomeNum > 0) {
+    const savingsRate = ((incomeNum - totalSpent) / incomeNum) * 100;
+    if (savingsRate < 0) {
+      insights.push({ status: "red", text: `You're spending more than you earn this month — $${money(Math.abs(incomeNum - totalSpent))} short.` });
+    } else if (savingsRate < 10) {
+      insights.push({ status: "amber", text: `You're saving ${savingsRate.toFixed(1)}% of income. Aim for 15–20% if you can.` });
+    } else {
+      insights.push({ status: "green", text: `You're saving ${savingsRate.toFixed(1)}% of income this month. Keep it up.` });
+    }
+  }
+
+  if (insights.length === 0) {
+    insights.push({ status: "green", text: "Add a category and log a few spends to see where the money's going." });
+  }
+  return insights;
+}
+
+export default function GenevieveBudget() {
+  const [loaded, setLoaded] = useState(false);
+  const [income, setIncome] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatBudget, setNewCatBudget] = useState("");
+
+  const [txCategory, setTxCategory] = useState("");
+  const [txAmount, setTxAmount] = useState("");
+  const [txNote, setTxNote] = useState("");
+  const [expandedCat, setExpandedCat] = useState(null);
+
+  const monthLabel = useMemo(
+    () => new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+    []
+  );
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get(STORAGE_KEY, false);
+        if (res && res.value) {
+          const data = JSON.parse(res.value);
+          setIncome(data.income || "");
+          setCategories(data.categories || []);
+          setTransactions(data.transactions || []);
+        }
+      } catch (e) {
+        // no saved data yet
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    (async () => {
+      try {
+        await window.storage.set(STORAGE_KEY, JSON.stringify({ income, categories, transactions }), false);
+      } catch (e) {
+        console.error("save failed", e);
+      }
+    })();
+  }, [income, categories, transactions, loaded]);
+
+  const rows = useMemo(() => {
+    return categories.map((c) => {
+      const spent = transactions
+        .filter((t) => t.categoryId === c.id)
+        .reduce((s, t) => s + Number(t.amount), 0);
+      return { ...c, spent, status: getStatus(spent, Number(c.budget)) };
+    });
+  }, [categories, transactions]);
+
+  const totalBudget = rows.reduce((s, c) => s + Number(c.budget), 0);
+  const totalSpent = rows.reduce((s, c) => s + c.spent, 0);
+  const incomeNum = Number(income) || 0;
+  const remaining = incomeNum > 0 ? incomeNum - totalSpent : totalBudget - totalSpent;
+  const overallStatus = incomeNum > 0 ? getStatus(totalSpent, incomeNum) : getStatus(totalSpent, totalBudget);
+  const insights = useMemo(() => buildInsights(rows, incomeNum, totalSpent), [rows, incomeNum, totalSpent]);
+
+  function addCategory() {
+    const name = newCatName.trim();
+    const budget = Number(newCatBudget);
+    if (!name || !budget || budget <= 0) return;
+    setCategories((prev) => [...prev, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name, budget }]);
+    setNewCatName("");
+    setNewCatBudget("");
+    setShowAddCat(false);
+  }
+
+  function deleteCategory(id) {
+    setCategories((prev) => prev.filter((c) => c.id !== id));
+    setTransactions((prev) => prev.filter((t) => t.categoryId !== id));
+  }
+
+  function addTransaction() {
+    const amount = Number(txAmount);
+    if (!txCategory || !amount || amount <= 0) return;
+    setTransactions((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        categoryId: txCategory,
+        amount,
+        note: txNote.trim(),
+        date: new Date().toISOString().slice(0, 10),
+      },
+    ]);
+    setTxAmount("");
+    setTxNote("");
+  }
+
+  function deleteTransaction(id) {
+    setTransactions((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  function resetAll() {
+    if (!window.confirm("Clear all budget data? This can't be undone.")) return;
+    setIncome("");
+    setCategories([]);
+    setTransactions([]);
+  }
+
+  return (
+    <div className="gb-root">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+
+        .gb-root {
+          --bg: #10161d;
+          --surface: #182029;
+          --surface-2: #1f2933;
+          --border: #2b3540;
+          --text: #ece8df;
+          --text-muted: #7c8896;
+          --brass: #c9a24a;
+          --green: #4fae73;
+          --amber: #e3a73a;
+          --red: #e2584c;
+          min-height: 100vh;
+          background: var(--bg);
+          color: var(--text);
+          font-family: 'Inter', sans-serif;
+          padding: 20px 16px 48px;
+          max-width: 480px;
+          margin: 0 auto;
+          box-sizing: border-box;
+        }
+        .gb-root * { box-sizing: border-box; }
+        .mono { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+        .display { font-family: 'Fraunces', serif; }
+
+        .gb-header { margin-bottom: 22px; }
+        .gb-eyebrow {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: var(--brass);
+          margin: 0 0 4px;
+        }
+        .gb-title {
+          font-family: 'Fraunces', serif;
+          font-size: 28px;
+          font-weight: 600;
+          margin: 0 0 2px;
+          letter-spacing: -0.01em;
+        }
+        .gb-sub { color: var(--text-muted); font-size: 13px; margin: 0; }
+
+        .lamp {
+          width: 10px; height: 10px; border-radius: 50%;
+          display: inline-block; flex-shrink: 0;
+        }
+        .lamp-green { background: var(--green); box-shadow: 0 0 8px 2px rgba(79,174,115,0.55); }
+        .lamp-amber { background: var(--amber); box-shadow: 0 0 8px 2px rgba(227,167,58,0.55); }
+        .lamp-red { background: var(--red); box-shadow: 0 0 8px 2px rgba(226,88,76,0.55); }
+        .lamp-neutral { background: #445162; }
+
+        .gb-summary {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 4px;
+          padding: 18px 16px;
+          margin-bottom: 20px;
+          position: relative;
+          overflow: hidden;
+        }
+        .gb-summary::before {
+          content: '';
+          position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+        }
+        .gb-summary.s-green::before { background: var(--green); }
+        .gb-summary.s-amber::before { background: var(--amber); }
+        .gb-summary.s-red::before { background: var(--red); }
+        .gb-summary.s-neutral::before { background: #445162; }
+
+        .gb-summary-row {
+          display: flex; justify-content: space-between; align-items: baseline;
+          padding: 6px 0;
+          border-bottom: 1px dashed var(--border);
+        }
+        .gb-summary-row:last-child { border-bottom: none; }
+        .gb-summary-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+        .gb-summary-value { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 500; }
+        .gb-summary-value.big { font-size: 24px; }
+
+        .gb-income-input {
+          background: transparent; border: none; border-bottom: 1px solid var(--border);
+          color: var(--text); font-family: 'IBM Plex Mono', monospace; font-size: 18px;
+          width: 110px; text-align: right; padding: 2px 0;
+        }
+        .gb-income-input:focus { outline: none; border-bottom-color: var(--brass); }
+        .gb-income-input::placeholder { color: var(--text-muted); }
+
+        .gb-section-title {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+          color: var(--text-muted); margin: 26px 0 10px;
+          display: flex; justify-content: space-between; align-items: center;
+        }
+
+        .gb-cat {
+          border-left: 2px dashed var(--border);
+          padding-left: 12px;
+          margin-bottom: 14px;
+        }
+        .gb-cat-head {
+          display: flex; align-items: center; gap: 8px; cursor: pointer;
+        }
+        .gb-cat-name { flex: 1; font-size: 14.5px; font-weight: 500; }
+        .gb-cat-nums { font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: var(--text-muted); }
+        .gb-cat-nums b { color: var(--text); font-weight: 500; }
+
+        .gb-bar-track {
+          height: 5px; background: var(--surface-2); border-radius: 3px; margin: 7px 0 2px;
+          overflow: hidden;
+        }
+        .gb-bar-fill { height: 100%; border-radius: 3px; transition: width 0.25s ease; }
+        .gb-bar-fill.green { background: var(--green); }
+        .gb-bar-fill.amber { background: var(--amber); }
+        .gb-bar-fill.red { background: var(--red); }
+
+        .gb-tx-list { margin-top: 10px; }
+        .gb-tx {
+          display: flex; justify-content: space-between; align-items: center;
+          font-size: 12.5px; padding: 5px 0; color: var(--text-muted);
+          border-bottom: 1px solid var(--border);
+        }
+        .gb-tx .amt { font-family: 'IBM Plex Mono', monospace; color: var(--text); }
+        .gb-tx button { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 2px; }
+        .gb-tx button:hover { color: var(--red); }
+
+        .gb-cat-del {
+          background: none; border: none; color: var(--text-muted); cursor: pointer;
+          padding: 2px; flex-shrink: 0;
+        }
+        .gb-cat-del:hover { color: var(--red); }
+
+        .gb-btn {
+          display: flex; align-items: center; justify-content: center; gap: 6px;
+          background: var(--surface); border: 1px solid var(--border); color: var(--text);
+          border-radius: 4px; padding: 10px 14px; font-size: 13px; font-family: 'Inter', sans-serif;
+          font-weight: 500; cursor: pointer; width: 100%;
+        }
+        .gb-btn:hover { border-color: var(--brass); }
+        .gb-btn.primary { background: var(--brass); color: #16110a; border-color: var(--brass); }
+        .gb-btn.primary:hover { opacity: 0.9; }
+        .gb-btn.ghost { background: transparent; border: none; color: var(--text-muted); }
+
+        .gb-form {
+          background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+          padding: 14px; margin-bottom: 14px;
+        }
+        .gb-form input, .gb-form select {
+          width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+          color: var(--text); border-radius: 4px; padding: 9px 10px; font-size: 13.5px;
+          margin-bottom: 8px; font-family: 'Inter', sans-serif;
+        }
+        .gb-form input::placeholder { color: var(--text-muted); }
+        .gb-form input:focus, .gb-form select:focus { outline: none; border-color: var(--brass); }
+        .gb-row2 { display: flex; gap: 8px; }
+        .gb-row2 > * { flex: 1; }
+
+        .gb-insight {
+          display: flex; gap: 10px; align-items: flex-start;
+          background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+          padding: 11px 12px; margin-bottom: 8px; font-size: 13px; line-height: 1.4;
+        }
+        .gb-insight .lamp { margin-top: 4px; }
+
+        .gb-empty {
+          color: var(--text-muted); font-size: 13px; text-align: center;
+          padding: 24px 10px; border: 1px dashed var(--border); border-radius: 4px;
+        }
+
+        .gb-footer { text-align: center; margin-top: 30px; }
+        .gb-footer button {
+          background: none; border: none; color: var(--text-muted); font-size: 11.5px;
+          text-decoration: underline; cursor: pointer;
+        }
+      `}</style>
+
+      <div className="gb-header">
+        <p className="gb-eyebrow">Genevieve · Budget Ledger</p>
+        <h1 className="gb-title">Where it's going</h1>
+        <p className="gb-sub">{monthLabel}</p>
+      </div>
+
+      <div className={`gb-summary s-${overallStatus}`}>
+        <div className="gb-summary-row">
+          <span className="gb-summary-label">Income</span>
+          <input
+            className="gb-income-input"
+            type="number"
+            inputMode="decimal"
+            placeholder="0.00"
+            value={income}
+            onChange={(e) => setIncome(e.target.value)}
+          />
+        </div>
+        <div className="gb-summary-row">
+          <span className="gb-summary-label">Spent</span>
+          <span className="gb-summary-value">${money(totalSpent)}</span>
+        </div>
+        <div className="gb-summary-row">
+          <span className="gb-summary-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className={`lamp lamp-${overallStatus}`} /> {incomeNum > 0 ? "Left this month" : "Budget remaining"}
+          </span>
+          <span className="gb-summary-value big" style={{ color: remaining < 0 ? "var(--red)" : "var(--text)" }}>
+            {remaining < 0 ? "-" : ""}${money(Math.abs(remaining))}
+          </span>
+        </div>
+      </div>
+
+      <div className="gb-section-title">
+        <span>Categories</span>
+        <span
+          onClick={() => setShowAddCat((v) => !v)}
+          style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4, color: "var(--brass)" }}
+        >
+          <Plus size={13} /> add
+        </span>
+      </div>
+
+      {showAddCat && (
+        <div className="gb-form">
+          <input
+            placeholder="Category name, e.g. Groceries"
+            value={newCatName}
+            onChange={(e) => setNewCatName(e.target.value)}
+          />
+          <input
+            type="number"
+            inputMode="decimal"
+            placeholder="Monthly budget ($)"
+            value={newCatBudget}
+            onChange={(e) => setNewCatBudget(e.target.value)}
+          />
+          <button className="gb-btn primary" onClick={addCategory}>
+            <Plus size={14} /> Add category
+          </button>
+        </div>
+      )}
+
+      {rows.length === 0 && !showAddCat && (
+        <div className="gb-empty">No categories yet. Add one — rent, groceries, transport, whatever eats your pay — and give it a monthly limit.</div>
+      )}
+
+      {rows.map((c) => {
+        const pct = c.budget > 0 ? Math.min(100, (c.spent / c.budget) * 100) : 0;
+        const isOpen = expandedCat === c.id;
+        const catTx = transactions.filter((t) => t.categoryId === c.id).slice().reverse();
+        return (
+          <div className="gb-cat" key={c.id}>
+            <div className="gb-cat-head" onClick={() => setExpandedCat(isOpen ? null : c.id)}>
+              <span className={`lamp lamp-${c.status}`} />
+              <span className="gb-cat-name">{c.name}</span>
+              <span className="gb-cat-nums">
+                <b>${money(c.spent)}</b> / ${money(c.budget)}
+              </span>
+              {isOpen ? <ChevronUp size={15} color="var(--text-muted)" /> : <ChevronDown size={15} color="var(--text-muted)" />}
+              <button
+                className="gb-cat-del"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteCategory(c.id);
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+            <div className="gb-bar-track">
+              <div className={`gb-bar-fill ${c.status === "neutral" ? "green" : c.status}`} style={{ width: `${pct}%` }} />
+            </div>
+            {isOpen && (
+              <div className="gb-tx-list">
+                {catTx.length === 0 && <p style={{ color: "var(--text-muted)", fontSize: 12.5, margin: "6px 0" }}>No spends logged yet.</p>}
+                {catTx.map((t) => (
+                  <div className="gb-tx" key={t.id}>
+                    <span>
+                      {t.date}
+                      {t.note ? ` — ${t.note}` : ""}
+                    </span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="amt">${money(t.amount)}</span>
+                      <button onClick={() => deleteTransaction(t.id)}>
+                        <Trash2 size={12} />
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {rows.length > 0 && (
+        <div className="gb-form" style={{ marginTop: 18 }}>
+          <div className="gb-section-title" style={{ margin: "0 0 10px" }}>
+            <span>Log a spend</span>
+          </div>
+          <select value={txCategory} onChange={(e) => setTxCategory(e.target.value)}>
+            <option value="">Select category</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <div className="gb-row2">
+            <input
+              type="number"
+              inputMode="decimal"
+              placeholder="Amount ($)"
+              value={txAmount}
+              onChange={(e) => setTxAmount(e.target.value)}
+            />
+            <input placeholder="Note (optional)" value={txNote} onChange={(e) => setTxNote(e.target.value)} />
+          </div>
+          <button className="gb-btn primary" onClick={addTransaction}>
+            <Wallet size={14} /> Log spend
+          </button>
+        </div>
+      )}
+
+      <div className="gb-section-title">
+        <span>{overallStatus === "red" ? <TrendingDown size={13} style={{ display: "inline", marginRight: 4 }} /> : <TrendingUp size={13} style={{ display: "inline", marginRight: 4 }} />} Insights</span>
+      </div>
+      {insights.map((ins, i) => (
+        <div className="gb-insight" key={i}>
+          <span className={`lamp lamp-${ins.status}`} />
+          <span>{ins.text}</span>
+        </div>
+      ))}
+
+      <div className="gb-footer">
+        <button onClick={resetAll}>Clear all data</button>
+      </div>
+    </div>
+  );
+}
